@@ -14,8 +14,10 @@ default = ["async"]
 async = ["futures"]
 
 [dependencies]
+console = "0.16"
 futures = { version = "0.3", optional = true }
 thiserror = "1.0.40"
+similar = { version = "3.1", features = ["std", "text", "inline"] }
 
 [dev-dependencies]
 anyhow = "1.0"

@@ -1,3 +1,4 @@
+use console::Style;
 use std::collections::{HashMap, VecDeque};
 use std::env;
 use std::fmt::Write;
@@ -107,6 +108,7 @@ pub struct TestCase {
     directive_line: String,
     expected: String,
     line_number: usize,
+    expected_line_number: usize,
 }
 
 impl TestCase {
@@ -515,9 +517,13 @@ impl TestFile {
                 match result.result() {
                     Ok(result) => {
                         if result != case.expected {
+                            let diff =
+                                make_diff(case.expected_line_number, &result, &case.expected);
                             self.failure = Some(format!(
-                                "failure:\n{}:{}:\n{}\nexpected:\n{}\nactual:\n{}",
-                                self.filename, case.line_number, case.input, case.expected, result
+                                "failure: {file}:{line}:\ninput:\n\n{input}\ndiff:\n{diff}",
+                                file = self.filename,
+                                line = case.line_number,
+                                input = case.input,
                             ));
                             // Yeah, ok, we're done here.
                             break;
@@ -599,6 +605,7 @@ impl TestFile {
                 i += 1;
             }
 
+            let expected_line_number = i;
             // Then slurp up the expected.
             let mut expected = String::new();
             while i < lines.len() {
@@ -636,6 +643,7 @@ impl TestFile {
                 args,
                 expected,
                 line_number,
+                expected_line_number,
             }));
             i += 1;
             if i < lines.len() {
@@ -757,6 +765,74 @@ pub async fn walk_async_concurrent_exclusive<F, T, M>(
     }
 }
 
+// TODO: it'd be really nice if this could show the lines the test cases are on,
+// not just relative to the start of their inputs.
+fn make_diff(line: usize, expected: &str, actual: &str) -> String {
+    struct Line(Option<usize>);
+
+    impl Line {
+        fn with_offset(off: usize, line: Option<usize>) -> Self {
+            let line = line.map(|n| n + off);
+            Self(line)
+        }
+    }
+
+    impl std::fmt::Display for Line {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            match self.0 {
+                Some(idx) => write!(f, "{:<4}", idx + 1),
+                None => write!(f, "    "),
+            }
+        }
+    }
+
+    use similar::{ChangeTag, TextDiff};
+
+    let diff = TextDiff::from_lines::<&str, &str, str>(&actual, &expected);
+    let mut delta = String::new();
+
+    for (idx, group) in diff.grouped_ops(3).iter().enumerate() {
+        if idx > 0 {
+            write!(&mut delta, "{:-^1$}", "-", 80).unwrap();
+        }
+
+        for op in group {
+            for change in diff.iter_inline_changes(op) {
+                let (sign, s) = match change.tag() {
+                    ChangeTag::Equal => (" ", Style::new().dim()),
+                    ChangeTag::Delete => ("-", Style::new().red()),
+                    ChangeTag::Insert => ("+", Style::new().green()),
+                };
+
+                write!(
+                    &mut delta,
+                    "{}{} | {}",
+                    console::style(Line::with_offset(line, change.old_index())).dim(),
+                    console::style(Line::with_offset(line, change.new_index())).dim(),
+                    s.apply_to(sign).bold(),
+                )
+                .unwrap();
+
+                // TODO: add some colored emphasis?
+                for (emph, value) in change.iter_strings_lossy() {
+                    if emph {
+                        write!(&mut delta, "{}", s.apply_to(value).underlined().on_black())
+                            .unwrap();
+                    } else {
+                        write!(&mut delta, "{}", s.apply_to(value)).unwrap();
+                    }
+                }
+
+                if change.missing_newline() {
+                    writeln!(&mut delta).unwrap();
+                }
+            }
+        }
+    }
+
+    delta
+}
+
 pub enum TestOutcome {
     Output(String),
     Skip,
@@ -789,13 +865,16 @@ impl TestFile {
                     TestOutcome::Skip => continue,
                 };
                 if result != original_case.expected {
+                    let diff = make_diff(
+                        original_case.expected_line_number,
+                        &result,
+                        &original_case.expected,
+                    );
                     self.failure = Some(format!(
-                        "failure:\n{}:{}:\n{}\nexpected:\n{}\nactual:\n{}",
-                        self.filename,
-                        original_case.line_number,
-                        original_case.input,
-                        original_case.expected,
-                        result
+                        "failure:\n{file}:{line}:\n{input}\n{diff}",
+                        file = self.filename,
+                        line = original_case.line_number,
+                        input = original_case.input,
                     ));
                     // Yeah, ok, we're done here.
                     break;
